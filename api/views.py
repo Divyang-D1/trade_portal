@@ -2,7 +2,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.auth.models import User
-from .models import Company, Watchlist
+from .models import Company, Watchlist, WatchlistItem
 from .serializers import UserSerializer, CompanySerializer, WatchlistSerializer
 
 class RegisterView(generics.CreateAPIView):
@@ -31,44 +31,74 @@ class WatchlistView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        items = Watchlist.objects.filter(user=request.user)
-        serializer = WatchlistSerializer(items, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        watchlists = Watchlist.objects.filter(user=request.user)
+        serializer = WatchlistSerializer(watchlists, many=True)
+        return Response(serializer.data)
 
-class AddToWatchlistView(APIView):
+class CreateWatchlist(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        company_id = request.data.get('company_id')
-        if not company_id:
-            return Response({'error': 'company_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            company = Company.objects.get(id=company_id)
-            obj, created = Watchlist.objects.get_or_create(user=request.user, company=company)
-            if created:
-                return Response({'message': 'Added to watchlist'}, status=status.HTTP_201_CREATED)
-            else:
-                return Response({'message': 'Already in watchlist'}, status=status.HTTP_200_OK)
-        except Company.DoesNotExist:
-            return Response({'error': 'Company not found'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        name = request.data.get('name')
+        if not name:
+            return Response({'error': 'name is required'}, status=400)
 
-class RemoveFromWatchlistView(APIView):
+        watchlist, created = Watchlist.objects.get_or_create(user=request.user, name_watchlist=name)
+        if created:
+            return Response({'message': 'Watchlist created'}, status=201)
+        return Response({'message': 'Watchlist already exists'}, status=200)
+
+class AddCompanyToWatchlist(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        company_id = request.data.get('company_id')
-        if not company_id:
-            return Response({'error': 'company_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        watchlist_id = request.data.get('watchlist_id')
+        company_ids = request.data.get('company_ids', [])
+
+        if not watchlist_id or not isinstance(company_ids, list):
+            return Response({'error': 'watchlist_id and list of company_ids required'}, status=400)
+
         try:
-            company = Company.objects.get(id=company_id)
-            deleted = Watchlist.objects.filter(user=request.user, company=company).delete()[0]
-            if deleted:
-                return Response({'message': 'Removed from watchlist'}, status=status.HTTP_200_OK)
-            else:
-                return Response({'message': 'Not in watchlist'}, status=status.HTTP_200_OK)
-        except Company.DoesNotExist:
-            return Response({'error': 'Company not found'}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            watchlist = Watchlist.objects.get(id=watchlist_id, user=request.user)
+        except Watchlist.DoesNotExist:
+            return Response({'error': 'Watchlist not found'}, status=404)
+
+        added = []
+        already_exists = []
+
+        for cid in company_ids:
+            try:
+                company = Company.objects.get(id=cid)
+                obj, created = WatchlistItem.objects.get_or_create(watchlist=watchlist, company=company)
+                if created:
+                    added.append(cid)
+                else:
+                    already_exists.append(cid)
+            except Company.DoesNotExist:
+                continue
+
+        return Response({
+            "added": added,
+            "already_exists": already_exists
+        })
+
+class RemoveCompanyFromWatchlist(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        watchlist_id = request.data.get('watchlist_id')
+        company_id = request.data.get('company_id')
+
+        if not watchlist_id or not company_id:
+            return Response({'error': 'watchlist_id and company_id are required'}, status=400)
+
+        try:
+            item = WatchlistItem.objects.get(
+                watchlist__id=watchlist_id,
+                watchlist__user=request.user,
+                company__id=company_id
+            )
+            item.delete()
+            return Response({'message': 'Removed from watchlist'})
+        except WatchlistItem.DoesNotExist:
+            return Response({'error': 'Item not found in watchlist'}, status=404)
